@@ -63,6 +63,10 @@ declare_oxc_lint!(
     /// return statements, etc, so specifying `undefined` in these cases
     /// is pointless.
     ///
+    /// Removing trailing `undefined` arguments is offered as a suggestion (`--fix-suggestions`),
+    /// not applied by `--fix`: the call then has fewer arguments, which a variadic or overloaded
+    /// function can tell apart.
+    ///
     /// ### Examples
     ///
     /// Examples of **incorrect** code for this rule:
@@ -470,7 +474,9 @@ impl Rule for NoUselessUndefined {
                 }
 
                 let delete_span = Span::new(start, end);
-                ctx.diagnostic_with_fix(
+                // Dropping an argument changes the call's arity: a variadic or overloaded callee
+                // (`(...args) => args.length`) can tell `f(a, undefined)` from `f(a)` (#29180).
+                ctx.diagnostic_with_suggestion(
                     no_useless_undefined_diagnostic_spans(undefined_args_spans),
                     |fixer| {
                         if ctx.has_comments_between(delete_span) {
@@ -1179,6 +1185,31 @@ fn test_guarded_indexed_access() {
         .intentionally_allow_no_fix_tests()
         .with_snapshot_suffix("guarded_indexed_access")
         .test_and_snapshot();
+}
+
+/// Dropping trailing `undefined` arguments changes the call's arity, so it is only a suggestion:
+/// `--fix` leaves them, `--fix-suggestions` removes them (#29180). The rule's other fixes stay safe.
+#[test]
+fn test_argument_removal_is_a_suggestion() {
+    use crate::{fixer::FixKind, tester::Tester};
+
+    let arity = "const hasBoth = (...args) => args.length === 2; hasBoth({}, undefined);";
+    let fail = vec![arity, "foo(a, undefined, undefined);", "function f() { return undefined; }"];
+    let fix = vec![
+        (arity, arity, None, FixKind::SafeFix),
+        (
+            arity,
+            "const hasBoth = (...args) => args.length === 2; hasBoth({});",
+            None,
+            FixKind::Suggestion,
+        ),
+        ("foo(a, undefined, undefined);", "foo(a, undefined, undefined);", None, FixKind::SafeFix),
+        ("foo(a, undefined, undefined);", "foo(a);", None, FixKind::Suggestion),
+        ("function f() { return undefined; }", "function f() { return; }", None, FixKind::SafeFix),
+    ];
+    Tester::new(NoUselessUndefined::NAME, NoUselessUndefined::PLUGIN, vec![], fail)
+        .expect_fix(fix)
+        .test();
 }
 
 #[test]
